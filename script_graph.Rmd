@@ -1,0 +1,764 @@
+---
+title: "graphs"
+author: "Hannah Phillips"
+date: "March 9, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(grid)
+library(cowplot)
+```
+
+```{r}
+budget.dat <- 
+  read_excel("results/results_for_graphs.xlsx", sheet = "Overall") %>% 
+  mutate_at(vars(Behavior, Treatment), as.factor)
+
+budget.dat <- 
+  budget.dat[order(budget.dat$Treatment, budget.dat$mean), ]
+
+budget.dat$Behavior <- 
+  factor(
+    budget.dat$Behavior, 
+    levels = c("Lying inactive", "Sham chewing", "Exploring", "Standing inactive", "Feeding", "Walking", "Enrichment use", "Agonistic", "Sitting",  "Drinking", "All other behaviors")
+  )
+```
+
+##### Time budget #####
+
+#set theme
+```{r}
+#theme_get()
+
+#theme_set(theme_classic())
+
+theme_set(
+  theme_classic() +
+    theme(
+      axis.text.y = element_text(size = 10, colour = "black"),
+      axis.text.x = element_text(size = 10, colour = "black"),
+      axis.title = element_text(size = 11),
+      legend.text = element_text(size = 11),
+      legend.title = element_text(size = 11),
+      text = element_text(family = "Arial")
+    )
+)
+```
+
+# Time budget (Fig 1)
+```{r}
+# make variables for text box locations
+dat.sham = subset(budget.dat, Behavior == "Sham chewing" & Treatment == "Control")
+
+{
+  plot.1 <- 
+    ggplot(
+      data = budget.dat,
+      aes(x = Behavior, y = prob, fill = Treatment)
+    ) +
+    
+    geom_bar(
+      stat = "identity",
+      position = position_dodge(width = .8),
+      color = "black",
+      width = .8
+    ) +
+    
+    scale_fill_manual(
+      values = c("white", "grey")
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI),
+      width = .5,
+      position = position_dodge(width = .8)
+    ) +
+    
+    coord_flip() + 
+    
+    guides(
+      fill = guide_legend(title = NULL, label.position = "right", reverse = T)
+    ) +
+    
+    theme(
+      legend.position = c(.8, .9),
+      legend.direction = "vertical", 
+      axis.title.y = element_blank(),
+      axis.ticks.y = element_blank(), 
+      axis.text = element_text(colour = "black")
+    ) +
+    
+    scale_y_continuous(
+      name = "Proportion of observations", 
+      breaks = seq(0, .8, .1), 
+      limits = c(0, .81), 
+      expand = c(0,0)
+    ) +
+    
+    geom_label(
+      data = dat.sham,
+      aes(x = 2, y =  0.3, label = "T x D: p = 0.05", hjust = 0),
+      #size = 4,
+      colour = "black",
+      label.padding = unit(.3, "lines"),
+      show.legend = F,
+      inherit.aes = F
+    )  
+}
+
+#segments for text
+seg <- data.frame(
+  y = dat.sham$prob + 0.01,
+  yend = 0.3,
+  x = 2,
+  xend = 2
+)
+
+plot.1 + annotate("segment", x = seg$x, xend = seg$xend, y = seg$y, yend = seg$yend) +
+    
+    ggsave("Fig1.tiff", width = 13.2, height = 8.7, units = "cm", dpi = 600)
+```
+
+## Lying (Fig 2A)
+```{r}
+dat.2a <- read_excel("results/results_for_graphs.xlsx", sheet = "Lying")
+
+day1.2a = subset(dat.2a, Treatment == "Control" & Day == 1)
+day2.2a = subset(dat.2a, Treatment == "Control" & Day == 2)
+day3.2a = subset(dat.2a, Treatment == "Control" & Day == 3)
+day4.2a = subset(dat.2a, Treatment == "Control" & Day == 4)
+
+{
+  plot.2a <-
+    ggplot(
+      dat.2a, 
+      aes(x = Day, y = prob, group = Treatment)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Treatment), 
+      size = .7, 
+      show.legend = T
+    ) +
+    
+    geom_point(
+      aes(shape = Treatment), 
+      size = 2, 
+      show.legend = T
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    theme(
+      legend.position = c(.7, .3), 
+      legend.direction = "vertical",
+      legend.title = element_blank(),
+      legend.key.size = unit(1.5, "cm"),
+      legend.margin = margin(unit(0, "cm")),
+      legend.text = element_text(hjust = 0),
+      axis.title.y = element_text(vjust = 1),   
+      axis.text = element_text(color = "black")
+    ) +
+    
+    scale_y_continuous(
+      name = "Lying inactive, proportion", 
+      breaks = seq(0, .8, .2),
+      limits = c(0, NA)
+    ) + 
+    
+    geom_label(
+      data = day1.2a,
+      aes(x = 1, y =  upper_CI, label = "b", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day2.2a,
+      aes(x = 2, y =  upper_CI, label = "a", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day3.2a,
+      aes(x = 3, y =  upper_CI, label = "a", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day4.2a,
+      aes(x = 4, y =  upper_CI, label = "b", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    )
+}
+plot.2a
+```
+
+## Sham chewing (Fig 2B)
+```{r}
+dat.2b <- read_excel("results/results_for_graphs.xlsx", sheet = "Sham_chewing")
+
+{
+  plot.2b <- 
+    ggplot(
+      dat.2b, 
+      aes(x = Day, y = prob, group = Treatment)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Treatment), 
+      size = .7, 
+      show.legend = F
+    ) +
+    
+    geom_point(
+      aes(shape = Treatment), 
+      size = 2, 
+      show.legend = F
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    theme(
+      axis.title.y = element_text(vjust = 1),   
+      axis.text = element_text(colour = "black")
+    ) +
+    
+    scale_y_continuous(
+      name = "Sham chewing, proportion", 
+      breaks = seq(0, .3, .05),
+      limits = c(0, .3)
+    )
+}
+plot.2b
+```
+
+## Standing (Fig 2C)
+```{r}
+dat.2c <- read_excel("results/results_for_graphs.xlsx", sheet = "Standing")
+
+day1.2c = subset(dat.2c, Treatment == "Control" & Day == 1)
+day2.2c = subset(dat.2c, Treatment == "Enrichment" & Day == 2)
+day3.2c = subset(dat.2c, Treatment == "Enrichment" & Day == 3)
+day4.2c = subset(dat.2c, Treatment == "Enrichment" & Day == 4)
+
+{
+  plot.2c <- 
+    ggplot(
+      dat.2c, 
+      aes(x = Day, y = prob, group = Treatment)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Treatment), 
+      size = .7, 
+      show.legend = F
+    ) +
+    
+    geom_point(
+      aes(shape = Treatment), 
+      size = 2, 
+      show.legend = F
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    theme(
+      axis.title.y = element_text(vjust = 1),
+      plot.caption = element_text(hjust = 0),   
+      axis.text = element_text(colour = "black")
+    ) +
+    
+    scale_y_continuous(
+      name = "Standing inactive, proportion", 
+      breaks = seq(0, .1, .02),
+      limits = c(0, .1)
+    ) +
+    
+    geom_label(
+      data = day1.2c,
+      aes(x = 1, y =  upper_CI, label = "a", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day2.2c,
+      aes(x = 2, y =  upper_CI, label = "b", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day3.2c,
+      aes(x = 3, y =  upper_CI, label = "b", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day4.2c,
+      aes(x = 4, y =  upper_CI, label = "a", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    )
+}
+plot.2c
+```
+
+## Enrichment (Fig 2D)
+```{r}
+dat.2d <- read_excel("results/results_for_graphs.xlsx", sheet = "Enrichment")
+
+day1.2d = subset(dat.2d, Day == 1)
+day2.2d = subset(dat.2d, Day == 2)
+day3.2d = subset(dat.2d, Day == 3)
+day4.2d = subset(dat.2d, Day == 4)
+
+{
+  plot.2d <- 
+    ggplot(
+      dat.2d, 
+      aes(x = Day, y = prob, group = Treatment)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Treatment), 
+      size = .7, 
+      show.legend = F
+    ) +
+    
+    geom_point(
+      aes(shape = Treatment), 
+      size = 2, 
+      show.legend = F
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    theme(
+      axis.title.y = element_text(vjust = 1),
+      plot.caption = element_text(hjust = 0),   
+      axis.text = element_text(color = "black")
+    ) +
+    
+    scale_y_continuous(
+      name = "Enrichment use, proportion", 
+      breaks = seq(0, .1, .02), 
+      lim = c(0, .1)
+    ) + 
+    
+    geom_label(
+      data = day1.2d,
+      aes(x = 1, y =  upper_CI, label = "a", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day2.2d,
+      aes(x = 2, y =  upper_CI, label = "c", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day3.2d,
+      aes(x = 3, y =  upper_CI, label = "bc", vjust = 0),
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(data = day4.2d,
+               aes(x = 4, y =  upper_CI, label = "b", vjust = 0),
+               label.size = 0,
+               colour = "black",
+               label.padding = unit(.35, "lines"),
+               show.legend = F
+    )
+}
+plot.2d
+```
+
+## put plots together
+```{r}
+cowplot::plot_grid(
+  #plot.2a, NULL, plot.2b, plot.2c, NULL, plot.2d, 
+  plot.2a, plot.2b, plot.2c, plot.2d,
+  #labels = c("A", "", "B", "C", "", "D"), 
+  labels = c("A", "B", "C", "D"),
+  #rel_widths = c(1, .2, 1, 1, .2, 1), 
+  #rel_widths = c(.1, 1, .1, 1),
+  align = "hv", 
+  nrow = 2
+) +
+    
+ggsave("Fig2.tiff", width = 19, height = 15, units = "cm", dpi = 600)
+```
+
+
+###### Continuous data #####
+#set theme
+```{r}
+theme_get()
+
+theme_update(
+  legend.position = c(.7, .9), 
+  legend.direction = "vertical",
+  legend.title = element_blank(),
+  legend.key.size = unit(2, "lines"),
+  legend.margin = margin(unit(0, "cm")),
+  legend.text = element_text(size = 10, hjust = 0),
+  axis.title = element_text(size = 11),
+  axis.title.y = element_text(vjust = 1),   
+  axis.text = element_text(size = 10, color = "black")
+)
+
+
+```
+
+## Bouts for sham chewing (Fig 3)
+```{r}
+dat.3 <- read_excel("results/results_for_graphs.xlsx", sheet = "Bouts_sham_chewing")
+
+day4.3 = subset(dat.3, Day == 4 & Group == "Sham chewing present")
+
+{
+  plot.3 <- 
+    ggplot(
+      dat.3, 
+      aes(x = Day, y = mean, group = Group)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Group), 
+      size = .7, 
+      show.legend = T
+    ) +
+    
+    geom_point(
+      aes(shape = Group), 
+      size = 2, 
+      show.legend = T
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    scale_y_continuous(
+      name = "Bouts, count h\u207B\u00B9", 
+      breaks = seq(0, 12, 2),
+      limits = c(0, NA)
+    ) +
+    
+    geom_label(
+      data = day4.3,
+      aes(x = 4, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    )
+}
+
+plot.3 +
+    
+ggsave("Fig3.tiff", width = 13.2, height = 9, units = "cm", dpi = 600)
+```
+
+## Duration for lameness (Fig 4a)
+```{r}
+dat.4a <- read_excel("results/results_for_graphs.xlsx", sheet = "Duration_lameness")
+
+day1.4a = subset(dat.4a, Day == 1 & Group == "Low lameness")
+day2.4a = subset(dat.4a, Day == 2 & Group == "Moderate lameness")
+day3.4a = subset(dat.4a, Day == 3 & Group == "Moderate lameness")
+day4.4a = subset(dat.4a, Day == 4 & Group == "Moderate lameness")
+
+{
+  plot.4a <- 
+    ggplot(
+      dat.4a, 
+      aes(x = Day, y = mean, group = Group)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Group), 
+      size = .7, 
+      show.legend = T
+    ) +
+    
+    geom_point(
+      aes(shape = Group), 
+      size = 2, 
+      show.legend = T
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    theme(
+      axis.title.x = element_blank(),
+      axis.text.x = element_blank(),
+      legend.key.height = unit(1, "line"),
+      legend.position = c(.3, .9)
+    ) +
+    
+    scale_y_continuous(
+      name = "Duration, s h\u207B\u00B9", 
+      breaks = seq(0, 480, 60),
+      limits = c(0, 480)
+    ) +
+    
+    geom_label(
+      data = day2.4a,
+      aes(x = 2, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day3.4a,
+      aes(x = 3, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day4.4a,
+      aes(x = 4, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    )
+}
+
+plot.4a 
+```
+
+## Bouts for lameness (Fig 4b)
+```{r}
+dat.4b <-
+  read_excel("results/results_for_graphs.xlsx", sheet = "Bouts_lameness")
+
+day2.4b = subset(dat.4b, Day == 2 & Group == "Moderate lameness")
+day3.4b = subset(dat.4b, Day == 3 & Group == "Moderate lameness")
+
+{
+  plot.4b <- 
+    ggplot(
+      dat.4b, 
+      aes(x = Day, y = mean, group = Group)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Group), 
+      size = .7, 
+      show.legend = F
+    ) +
+    
+    geom_point(
+      aes(shape = Group), 
+      size = 2, 
+      show.legend = F
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    theme(
+      axis.title.x = element_blank(),
+      axis.text.x = element_blank()
+    ) +
+    
+    scale_y_continuous(
+      name = "Bouts, count h\u207B\u00B9", 
+      breaks = seq(0, 12, 2),
+      limits = c(0, 12)
+    ) +
+    
+    geom_label(
+      data = day2.4b,
+      aes(x = 2, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day3.4b,
+      aes(x = 3, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) 
+}
+
+plot.4b
+```
+
+## Duration of bouts for lameness (Fig 4c)
+```{r}
+dat.4c <- read_excel("results/results_for_graphs.xlsx", sheet = "Duration_of_bouts_lameness")
+
+day2.4c = subset(dat.4c, Day == 2 & Group == "Moderate lameness")
+day4.4c = subset(dat.4c, Day == 4 & Group == "Moderate lameness")
+
+{
+  plot.4c <- 
+    ggplot(
+      dat.4c, 
+      aes(x = Day, y = mean, group = Group)
+    ) + 
+    
+    geom_line(
+      aes(linetype = Group), 
+      size = .7, 
+      show.legend = F
+    ) +
+    
+    geom_point(
+      aes(shape = Group), 
+      size = 2, 
+      show.legend = F
+    ) +
+    
+    geom_errorbar(
+      aes(ymin = lower_CI, ymax = upper_CI), 
+      width = .2,
+      size = .5,
+      linetype = 1,
+      color = "black",
+      position = position_dodge(width = 0.05)
+    ) +
+    
+    scale_y_continuous(
+      name = "Bout duration, s bout\u207B\u00B9", 
+      breaks = seq(0, 60, 10),
+      limits = c(0, 60)
+    ) +
+    
+    geom_label(
+      data = day2.4c,
+      aes(x = 2, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) +
+    
+    geom_label(
+      data = day4.4c,
+      aes(x = 4, y =  upper_CI, label = "*", vjust = 0),
+      size = 6,
+      label.size = 0,
+      colour = "black",
+      label.padding = unit(.35, "lines"),
+      show.legend = F
+    ) 
+}
+
+plot.4c
+```
+
+## put plots together
+```{r}
+cowplot::plot_grid(
+  plot.4a, plot.4b, plot.4c, 
+  labels = c('A', 'B', 'C'), 
+  nrow = 3,
+  rel_heights = c(.9, .85, 1)
+) +
+    
+ggsave("Fig4.tiff", width = 13.2, height = 16, units = "cm", dpi = 600)
+```

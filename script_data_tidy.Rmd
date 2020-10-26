@@ -1,0 +1,271 @@
+---
+title: "pig_enrichment_data_tidy_script"
+author: "Hannah Phillips"
+date: "March 3, 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE}
+library(readxl)
+library(tidyverse)
+library(lubridate)
+library(plyr) #revalue
+```
+
+#scan behavior
+```{r}
+# merge data
+Pig_behavior <- merge(read_excel("original_behavior_scan.xlsx") %>% 
+                        mutate(Behavior = as_factor(Behavior)), 
+                      read_excel("sow_info.xlsx") %>% 
+                        select(-`Pig ID`), 
+                      by = c("Pen", "Focal"))
+
+Pig_behavior = Pig_behavior %>% 
+  mutate(Behavior = revalue(Behavior, c("exploration" = "exploring", 
+                                        "lying inactive" = "lyingInactive",
+                                        "standing inactive" = "standingInactive",
+                                        "sham chewing" = "shamChewing",
+                                        "feeder" = "feeding",
+                                        "dog-sitting inactive" = "dogSittingInactive",
+                                        "Other social*" = "otherSocial",
+                                        "downward dog" = "downwardDog",
+                                        "lever" = "agonistic",
+                                        "chase*" = "agonistic",
+                                        "bite*" = "agonistic",
+                                        "disturb*" = "spaceCompetition",
+                                        "human interaction" = "other",
+                                        "Enrichment interaction" = "enrichmentInteraction",
+                                        "bar biting" = "exploring",
+                                        "elimination" = "other",
+                                        "knock*" = "agonistic",
+                                        "SOCIAL-agonistic" = "agonistic",
+                                        "displace*" = "spaceCompetition",
+                                        "scratching" = "other",
+                                        "lost" = "unknown")))
+  
+## make each behavior its own variable in a column
+Pig_behavior <- Pig_behavior %>% 
+  mutate(Time = ymd_hms(Time)) %>% 
+  mutate(Hour = hour(Time)) %>% 
+  mutate(Min = minute(Time)) %>% 
+  unite(Time, Hour, Min, sep = ":") %>% 
+  mutate(PenDayTime = paste0(sep = "Pen", Pen, 
+                             sep = "_Day", Day, 
+                             sep = "_", Time)) %>% 
+  mutate(PenDay = paste0(sep = "Pen", Pen, sep = "_Day", Day)) %>% 
+  mutate(Count = 1) %>% 
+  spread(key = Behavior, value = Count) 
+
+## fill NA with 0
+Pig_behavior[is.na(Pig_behavior)] <- 0
+Pig_behavior <- Pig_behavior %>% 
+  mutate(Weight = (1-unknown))  
+
+# set NAs in parity and lameness if weight = 0
+Pig_behavior = Pig_behavior %>% 
+  mutate(Parity = ifelse(Weight == 0, NA, Parity)) %>% 
+  mutate(Lameness = ifelse(Weight == 0, NA, Lameness)) %>% 
+  select(Pen:Date, Time:PenDay, Parity, Lameness, Weight, exploring:enrichmentInteraction) 
+ 
+#count if not NA function
+countFun = function(x){sum(!is.na(x))}
+
+# aggregate data by pen
+Pig.sum <- Pig_behavior %>%
+  select(c(PenDay, Weight:enrichmentInteraction)) %>%
+  group_by(PenDay) %>%
+  summarise_all(funs(sum(.)))
+
+Pig.mean <- Pig_behavior %>%
+  select(c(PenDay, Parity, Lameness)) %>%
+  group_by(PenDay) %>%
+  summarise_all(funs(mean(., na.rm = T)))
+
+Pig_behavior <- merge(Pig.mean, Pig.sum, by = "PenDay")
+
+Pig_behavior <- data.frame(c(Pig_behavior[,1:4], Pig_behavior[,5:18]/Pig_behavior$Weight))
+
+Pig_behavior <- Pig_behavior %>% 
+  separate(PenDay, into = c("Pen", "Day"), sep = "_") %>% 
+  mutate(Day = as.factor(Day)) %>% 
+  mutate(Day = revalue(Day, c("Day0" = "Baseline", "Day1" = "1_Period1", 
+                              "Day2" = "2_Period1", "Day3" = "3_Period1", 
+                              "Day4" = "4_Period1", "Day5" = "1_Period2", 
+                              "Day6" = "2_Period2", "Day7" = "3_Period2", 
+                              "Day8" = "4_Period2"))) %>% 
+  separate(Day, into = c("Day", "Period"), sep = "_") 
+
+# add baseline variables
+Pen2Baseline <- Pig_behavior %>% 
+  filter(Pen == "Pen2" & Day == "Baseline") %>% 
+  select(-c(Pen:Lameness))
+
+colnames(Pen2Baseline) <-  paste0(colnames(Pen2Baseline), "Baseline")
+Pen2 <- Pig_behavior %>% 
+  filter(Pen == "Pen2")
+
+Pen2Full <- cbind(Pen2,Pen2Baseline)
+
+Pen3Baseline <- Pig_behavior %>% 
+  filter(Pen == "Pen3" & Day == "Baseline") %>% 
+  select(-c(Pen:Lameness))
+
+colnames(Pen3Baseline) <-  paste0(colnames(Pen3Baseline), "Baseline")
+
+Pen3 <- Pig_behavior %>% 
+  filter(Pen == "Pen3")
+
+Pen3Full <- cbind(Pen3,Pen3Baseline)
+
+Pen4Baseline <- Pig_behavior %>% 
+  filter(Pen == "Pen4" & Day == "Baseline") %>% 
+  select(-c(Pen:Lameness))
+
+colnames(Pen4Baseline) <- paste0(colnames(Pen4Baseline), "Baseline")
+
+Pen4 <- Pig_behavior %>% 
+  filter(Pen == "Pen4")
+
+Pen4Full <- cbind(Pen4,Pen4Baseline)
+
+Pen6Baseline <- Pig_behavior %>% 
+  filter(Pen == "Pen6" & Day == "Baseline") %>% 
+  select(-c(Pen:Lameness))
+
+colnames(Pen6Baseline) <-  paste0(colnames(Pen6Baseline), "Baseline")
+
+Pen6 <- Pig_behavior %>% 
+  filter(Pen == "Pen6")
+
+Pen6Full <- cbind(Pen6,Pen6Baseline)
+
+Pig_behavior <- rbind(Pen2Full, Pen3Full, Pen4Full, Pen6Full)
+
+# add treatment
+Pig_behavior <- Pig_behavior %>% 
+  mutate(Treatment = if_else(Period == "Period1" & Pen == "Pen4" | 
+                                 Period == "Period1" & Pen == "Pen6"| 
+                                 Period == "Period2" & Pen == "Pen2"| 
+                                 Period == "Period2" & Pen == "Pen3", 
+                               'luna', 'control')) %>% 
+  mutate(Order = if_else(Period == "Period1" & Treatment == "luna" | 
+                           Period == "Period2" & Treatment == "control", 
+                         "lunaFirst", "lunaSecond")) %>% 
+  select(c(Pen:Period, Treatment:Order, Weight:enrichmentInteractionBaseline))
+```
+
+```{r}
+write.csv(Pig_behavior, file = "tidy_dat_pig_behavior.csv")
+```
+
+#continuous behavior
+```{r}
+Continuous <- merge(read_excel("original_behavior_continuous.xlsx"), 
+                    read_excel("sow_info.xlsx") %>% 
+                      select(-`Pig ID`), by = c("Pen", "Focal"))
+
+## make time
+Continuous <- Continuous %>% 
+  select(-c(Observer, Date, `Time begin`, `Time end`, Notes)) %>% 
+  mutate(Day = ifelse(Day == 5, 1, 
+                      ifelse(Day == 6, 2, 
+                             ifelse(Day == 7, 3, 
+                                    ifelse(Day == 8, 4, Day))))) %>% 
+  mutate(`Total time` = ymd_hms(`Total time`)) %>% 
+  mutate(Minutes = minute(`Total time`)) %>% 
+  mutate(Seconds = second(`Total time`)) %>% 
+  mutate(Seconds = Minutes*60 + Seconds) %>% 
+  select(-c(Minutes, `Total time`))
+
+# aggregate data by pen
+
+#count if not NA function
+#countFun = function(x){sum(!is.na(x))}
+
+Seconds <- Continuous %>%
+  select(c(Pen, Day, Seconds)) %>%
+  group_by(Pen, Day) %>%
+  summarise_all(funs(sum(.))) %>% 
+  rename_at(vars(Seconds), ~ paste0(.,"Sum"))
+
+Means <- Continuous %>%
+  select(c(Pen, Day, Parity, Lameness, Seconds)) %>%
+  group_by(Pen, Day) %>%
+  summarise_all(funs(mean(., na.rm = T))) %>% 
+  rename_at(vars(Parity, Lameness, Seconds), ~ paste0(.,"Avg"))
+
+Bouts <- Continuous %>%
+  select(c(Pen, Day, Seconds)) %>%
+  group_by(Pen, Day) %>%
+  summarise_all(funs(length(.))) %>% 
+  rename(replace = c("Seconds" = "Bouts"))
+
+Pen.dat <- merge(merge(Seconds, Means, by = c("Pen", "Day")), 
+                 Bouts, by = c("Pen", "Day")) %>% 
+  mutate(Period = ifelse(Pen < 4, 2, 1)) %>% 
+  select(c(Pen, Day, Period, ParityAvg, LamenessAvg, 
+           SecondsSum, SecondsAvg, Bouts)) %>% 
+  mutate_at(vars(Day, Period),  as.factor) %>% 
+  rename(replace = c("SecondsAvg" = "SecondsPerBout"))
+
+
+# aggregate data by focal
+Seconds.focal <- Continuous %>%
+  select(c(Pen, Day, Focal, Seconds)) %>%
+  group_by(Pen, Day, Focal) %>%
+  summarise_all(funs(sum(.))) %>% 
+  rename_at(vars(Seconds), ~ paste0(.,"Sum"))
+
+Means.focal <- Continuous %>%
+  group_by(Pen, Day, Focal) %>%
+  summarise_all(funs(mean(.))) %>% 
+  rename(replace = c("Seconds" = "SecondsPerBout"))
+
+Bouts.focal <- Continuous %>%
+  select(c(Pen, Day, Focal, Seconds)) %>%
+  group_by(Pen, Day, Focal) %>%
+  summarise_all(funs(length(.))) %>% 
+  rename(replace = c("Seconds" = "Bouts"))
+
+#create data to get NAs for focals not observed
+Focal.dat = merge(merge(data.frame(Pen = c(rep("2", 40), 
+                                           rep("3", 40), 
+                                           rep("4", 40), 
+                                           rep("6", 40)), 
+                                   Day = c(rep(c(rep("1", 10), 
+                                                 rep("2", 10), 
+                                                 rep("3", 10), 
+                                                 rep("4", 10)), 4)), 
+                                   Focal = c(rep(1:10, 16))), 
+                        read_excel("sow_info.xlsx") %>% 
+                          select(-c(`Pig ID`)), 
+                        by = c("Pen", "Focal"), all = T), 
+                  merge(merge(Seconds.focal, Means.focal, 
+                              by = c("Pen", "Day", "Focal")), 
+                        Bouts.focal, 
+                        by = c("Pen", "Day", "Focal")) %>% 
+                    mutate_at(vars(Pen, Day, Focal), as.factor) %>% 
+                    select(c(Pen:Focal, Parity, Lameness, 
+                             SecondsSum, SecondsPerBout, Bouts)), 
+                  by = c("Pen", "Day", "Focal", "Parity", "Lameness"), all = T) %>% 
+  mutate(Period = ifelse(Pen == "3" | Pen == "2", 2, 1)) %>% 
+  select(c(Pen, Day, Period, Focal:Bouts)) %>% 
+  mutate_at(vars(Period, Focal), as.factor) %>% 
+  mutate(SecondsSum = ifelse(is.na(SecondsSum), 0, SecondsSum)) %>%
+  mutate(Bouts = ifelse(is.na(Bouts), 0, Bouts)) %>% 
+  mutate(Parity.group = ifelse(Parity > 2, "3to9", "0to2")) %>% 
+  mutate(Lameness.group = ifelse(Lameness > 1, "1.5to2.5", 
+                                 ifelse(Lameness < 1.5, "0to1", NA))) %>% 
+  mutate_at(vars(Parity.group, Lameness.group), as.factor) 
+
+```
+
+```{r}
+write.csv(Pen.dat, file = "tidy_dat_continuous_pen_pig_behavior.csv")
+write.csv(Focal.dat, file = "tidy_dat_continuous_focal_pig_behavior.csv")
+```

@@ -1,0 +1,1336 @@
+---
+title: "pig_scan_analysis_script"
+author: "Hannah Phillips"
+date: "March 3, 2020"
+output:
+  html_document: default
+  word_document: default
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readxl)
+library(tidyverse)
+library(nlme)
+library(lsmeans) #least squares
+library(MASS) #glmmPQL
+library(aod) #wald tests
+library(plyr)
+library(MuMIn) #R-squared
+library(multcomp)
+library(car)
+library(glmmTMB)
+
+```
+
+#input dataset
+```{r message=FALSE, warning=FALSE, include=FALSE, paged.print=FALSE}
+#scan data
+dat <- 
+  read_excel("tidy_dat_pig_behavior.xlsx", sheet = "scans") %>%
+  mutate_at(vars(Pen, Day, Period, Treatment, Order), as.factor) %>%
+  filter(Day != "Baseline")
+
+#baseline scan data
+baseline.dat <- 
+  read_excel("tidy_dat_pig_behavior.xlsx", sheet = "scans") %>%
+  mutate_at(vars(Pen, Day, Period, Treatment, Order), as.factor) %>%
+  filter(Day == "Baseline") %>%
+  mutate(PenTrt = paste0(Pen, Treatment)) %>%
+  mutate(PenTrt = as.factor(PenTrt)) %>% 
+  mutate(sitting = dogSittingInactive + downwardDog) %>% 
+  mutate(agonistic = agonistic + spaceCompetition) %>% 
+  mutate(other = other + otherSocial) %>% 
+  dplyr::select(c(Pen, Day, Weight:feeding, drinking, agonistic, other, sitting))
+
+#continuous focal-level data
+dat2 <- 
+  merge(read_excel("tidy_dat_pig_behavior.xlsx", sheet = "continuous") %>%
+          dplyr::select(c(Pen:Focal, Parity.group, Lameness.group, SecondsSum:Bouts)) %>%
+          mutate_at(vars(Pen, Day, Period, Focal, Parity.group, Lameness.group), as.factor) %>%
+          mutate_at(vars(SecondsSum:Bouts), as.numeric),
+        read_excel("tidy_focal_scan_dat.xlsx") %>% #scan data at focal-level
+          dplyr::select(c(Pen, Focal, Period, Weight, shamChewing)) %>%
+          mutate_at(vars(Pen, Focal, Period), as.factor) %>%
+          mutate(shamChewing = as.numeric(shamChewing)) %>%
+          subset(Period == "Baseline") %>% 
+          rename(replace = c("shamChewing" = "shamChewingBaseline")) %>% 
+          mutate(shamChew.group = if_else(shamChewingBaseline > 0, "shamChew", "noShamChew")) %>%
+          dplyr::select(-c(Period)
+          ), 
+        by = c("Pen", "Focal"), all.x = T
+  ) %>%   
+  mutate(Parity.group = revalue(Parity.group, c("0to2" = "lowParity", "3to9" = "highParity"))) %>%
+  mutate(Lameness.group= revalue(Lameness.group, c("0to1" = "lowLameness", "1.5to2.5" = "modLameness"))) %>%
+  mutate(sow_ID = paste(Pen, Focal, sep ="_")) %>%
+  dplyr::select(c(sow_ID, Pen:Lameness.group, shamChew.group, SecondsSum:Bouts)) %>%
+  subset(!is.na(Lameness.group)) %>%
+  mutate_at(vars(shamChew.group, sow_ID), as.factor)
+
+#overdispersion function
+overdisp_fun <- 
+  function(model) {
+    rdf <- df.residual(model)
+    rp <- residuals(model, type = "pearson")
+    Pearson.chisq <- sum(rp^2)
+    prat <- Pearson.chisq/rdf
+    pval <- pchisq(Pearson.chisq, df = rdf, lower.tail = F)
+    c(chisq <- Pearson.chisq,ratio = prat,rdf = rdf,p = pval)
+  }
+```
+
+#frequency tables for number of sows per group
+```{r}
+#parity
+table(dat2$Parity.group)/4 #sows per group
+table(dat2$Parity.group, dat2$Pen)/4 #sows per pen
+
+#lameness
+table(dat2$Lameness.group)/4 #sows per group
+table(dat2$Lameness.group, dat2$Pen)/4 #sows per pen
+
+#baseline sham chewing
+table(dat2$shamChew.group)/4 #sows per group
+table(dat2$shamChew.group, dat2$Pen)/4 #sows per pen
+
+#sows per each group
+table(dat2$shamChew.group, dat2$Parity.group, dat2$Lameness.group)/4 
+```
+
+#focal-level analysis
+```{r eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+####duration
+#fit model
+model <- 
+  glmmTMB(
+    SecondsSum ~ Day + Period + Parity.group*Day + shamChew.group*Day + Lameness.group*Day + (1|Pen/Focal), 
+    family = nbinom2, 
+    data = dat2, 
+    verbose = F, 
+    REML = T, 
+    ziformula = ~ 1)
+
+model.duration = model
+
+summary(model)
+
+#fixed effects
+seconds.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(y = "secondsPerHour")
+
+{
+  #means
+  seconds.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Day", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Day" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Parity.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Parity.group" = "x")), 
+        summary(emmeans(model, "shamChew.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("shamChew.group" = "x")),
+        summary(emmeans(model, "Lameness.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Lameness.group" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Parity.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Parity.group" = "x")),
+      summary(emmeans(model, ~ shamChew.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("shamChew.group" = "x")),
+      summary(emmeans(model, ~ Lameness.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Lameness.group" = "x"))
+    ) %>% 
+    mutate(Behavior = "secondsPerHour")
+  
+  #mean diff
+  secondsPerHour.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Parity.group"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Parity.group"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "shamChew.group"), reverse = F, type = "response"), level = 0.90),           confint(pairs(emmeans(model, "shamChew.group"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Lameness.group"), reverse = F, type = "response"), level = 0.90),           confint(pairs(emmeans(model, "Lameness.group"), reverse = T, type = "response"), level = 0.90)
+        ), 
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Parity.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Parity.group", by = "Day"), reverse = T, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "shamChew.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "shamChew.group", by = "Day"), reverse = T, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Lameness.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Lameness.group", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "secondsPerHour")
+  }
+
+#comparisons for tables and figures
+cld(lsmeans(model.duration, ~ Parity.group, type = "response"), alpha = .1)
+cld(lsmeans(model.duration, ~ Lameness.group|Day, type = "response"), alpha = .1)
+cld(lsmeans(model.duration, ~ Day|Lameness.group, type = "response"), alpha = .1)
+
+#RR
+confint(pairs(lsmeans(model, ~ Parity.group), type = "response", reverse = F), level = .9)
+confint(pairs(lsmeans(model, ~ Day|Lameness.group), type = "response", reverse = F), level = .9)
+
+#p-values
+contrast(emmeans(model.duration, "Day", by = "Lameness.group", type = "response"), method = "pairwise")
+
+remove(model)
+
+
+####Bouts
+#fit model
+model <- 
+  glmmTMB(
+    Bouts ~ Day + Period + Parity.group*Day + shamChew.group*Day + Lameness.group*Day + (1|Pen/Focal), 
+    family = nbinom2, 
+    data = dat2, 
+    verbose = F, 
+    REML = T, 
+    ziformula = ~ 1)
+
+model.bouts = model
+
+#fixed effects
+bouts.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(y = "bouts")
+
+{
+  #means
+  bouts.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Day", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Day" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Parity.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Parity.group" = "x")), 
+        summary(emmeans(model, "shamChew.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("shamChew.group" = "x")),
+        summary(emmeans(model, "Lameness.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Lameness.group" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Parity.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Parity.group" = "x")),
+      summary(emmeans(model, ~ shamChew.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("shamChew.group" = "x")),
+      summary(emmeans(model, ~ Lameness.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Lameness.group" = "x"))
+    ) %>% 
+    mutate(Behavior = "bouts")
+  
+  #mean diff
+  bouts.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Parity.group"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Parity.group"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "shamChew.group"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "shamChew.group"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Lameness.group"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Lameness.group"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Parity.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Parity.group", by = "Day"), reverse = T, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "shamChew.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "shamChew.group", by = "Day"), reverse = T, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Lameness.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Lameness.group", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "bouts")
+  }
+
+#comparisons for tables and figures
+cld(lsmeans(model, ~ Parity.group, type = "response"), alpha = .1)
+cld(lsmeans(model, ~ shamChew.group|Day, type = "response"), alpha = .1)
+cld(lsmeans(model.bouts, ~ Lameness.group|Day, type = "response"), alpha = .1)
+cld(lsmeans(model.bouts, ~ Day|Lameness.group, type = "response"), alpha = .1)
+
+#RR
+confint(pairs(lsmeans(model, ~ Parity.group), type = "response", reverse = F), level = .9)
+confint(pairs(lsmeans(model, ~ Day|shamChew.group), type = "response", reverse = T), level = .9)
+confint(pairs(lsmeans(model, ~ Day|Lameness.group), type = "response", reverse = T), level = .9)
+
+#p-values
+contrast(emmeans(model.bouts, "Day", by = "Lameness.group", type = "response"), method = "pairwise")
+
+remove(model)
+
+
+####duration of bouts
+#fit model
+model <- 
+  glmmTMB(
+    SecondsPerBout ~ Day + Period + Parity.group*Day + shamChew.group*Day + Lameness.group*Day + (1|Pen/Focal), 
+    family = nbinom2, 
+    data = dat2, 
+    verbose = F, 
+    REML = T)
+
+model.boutduration = model
+
+#fixed effects
+SecondsPerBout.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(y = "SecondsPerBout")
+
+{
+  #means
+  SecondsPerBout.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Day", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Day" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Parity.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Parity.group" = "x")), 
+        summary(emmeans(model, "shamChew.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("shamChew.group" = "x")),
+        summary(emmeans(model, "Lameness.group", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Lameness.group" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Parity.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Parity.group" = "x")),
+      summary(emmeans(model, ~ shamChew.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("shamChew.group" = "x")),
+      summary(emmeans(model, ~Lameness.group|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Lameness.group" = "x"))
+    ) %>% 
+    mutate(Behavior = "SecondsPerBout")
+  
+  #mean diff
+  SecondsPerBout.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Parity.group"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Parity.group"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "shamChew.group"), reverse = F, type = "response"), level = 0.90),           confint(pairs(emmeans(model, "shamChew.group"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Lameness.group"), reverse = F, type = "response"), level = 0.90),           confint(pairs(emmeans(model, "Lameness.group"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3" 
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Parity.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Parity.group", by = "Day"), reverse = T, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "shamChew.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "shamChew.group", by = "Day"), reverse = T, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Lameness.group", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Lameness.group", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "SecondsPerBout")
+  }
+
+#comparisons for tables and figures
+cld(lsmeans(model.boutduration, ~ Lameness.group|Day, type = "response"), alpha = .1)
+
+#RR
+confint(pairs(lsmeans(model, ~ Day|Lameness.group), type = "response", reverse = F), level = .9)
+
+#p-values
+contrast(emmeans(model.boutduration, "Day", by = "Lameness.group", type = "response"), method = "pairwise")
+
+remove(model)
+```
+
+#merge continuous focal-level results
+```{r eval=FALSE, include=FALSE}
+means <- 
+  rbind(seconds.means, bouts.means, timePerBout.means)
+
+meanDiff <- 
+  rbind(seconds.diff, bouts.diff, timePerBout.diff) 
+
+waldTests <- 
+  rbind(seconds.wald, bouts.wald, timePerBout.wald)
+
+remove(seconds.means, bouts.means, timePerBout.means, seconds.diff, bouts.diff, timePerBout.diff, seconds.wald, bouts.wald, timePerBout.wald)
+```
+
+#write data
+```{r eval=FALSE, include=FALSE}
+write.csv(means, file = "results_means_continuous_focal.csv")
+write.csv(meanDiff, file = "results_mean_diff_continuous_focal.csv")
+write.csv(waldTests, file = "results_waldtests_continuous_focal.csv")
+
+remove(means, meanDiff, waldTests)
+```
+
+
+
+
+#scan behaviors at pen-level (glmmTMB)
+```{r eval=FALSE, include=FALSE}
+####exploring
+#fit model
+model <- 
+  glmmTMB(
+    exploring ~ Treatment*Day + Period + Order + exploringBaseline + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.explore = model
+
+#baseline info
+confint(model, level = 0.90)
+
+#fixed effects
+exploring.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "exploring")
+
+{
+  #means
+  exploring.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))) %>% mutate(Day = ""), 
+      summary(emmeans(model, ~Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "exploring")
+  
+  #mean diff
+  exploring.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3" 
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "exploring")
+  }
+
+#comparisons
+cld(lsmeans(model.explore, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+remove(model)
+
+
+####lying
+#fit model
+model <- 
+  glmmTMB(
+    lyingInactive ~ Treatment*Day + Period + Order + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.lying = model
+
+#fixed effects
+lying.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "lying")
+
+{
+  #means
+  lying.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "lying")
+  
+  #mean diff
+  lying.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "lying")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Day, type = "response"), alpha = .1)
+cld(lsmeans(model.lying, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+#p-values
+contrast(emmeans(model, "Day", type = "response"), method = "pairwise")
+
+contrast(emmeans(model, "Treatment", by = "Day", type = "response"), method = "pairwise")
+
+remove(model)
+
+
+####standing
+#fit model
+model <- 
+  glmmTMB(
+    standingInactive ~ Treatment*Day + Period + Order + standingInactiveBaseline + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.stand = model
+
+#baseline info
+confint(model, level = 0.90)
+
+#fixed effects
+standing.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "standing")
+
+{
+  #means
+  standing.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "standing")
+  
+  #mean diff
+  standing.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "standing")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Day, type = "response"), alpha = .1)
+
+cld(lsmeans(model.stand, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+#p-values
+contrast(emmeans(model, "Day", type = "response"), method = "pairwise")
+
+contrast(emmeans(model, "Treatment", by = "Day", type = "response"), method = "pairwise")
+
+remove(model)
+
+
+####walking
+#fit model
+model <- 
+  glmmTMB(
+    walking ~ Treatment*Day + Period + Order + walkingBaseline + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.walk = model
+
+#baseline info
+confint(model, level = 0.90)
+
+#fixed effects
+walking.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "walking")
+
+{
+  #means
+  walking.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "walking")
+  
+  #mean diff
+  walking.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "walking")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Day, type = "response"), alpha = .1)
+cld(lsmeans(model.walk, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+remove(model)
+
+
+####sham
+#fit model
+model <- 
+  glmmTMB(
+    shamChewing ~ Treatment*Day + Period + Order + shamChewingBaseline + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.sham = model
+
+#baseline info
+confint(model, level = 0.90)
+
+#fixed effects
+shamChewing.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "shamChewing")
+
+{
+  #means
+  shamChewing.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "shamChewing")
+  
+  #mean diff
+  shamChewing.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "shamChewing")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Treatment|Day, type = "response"), alpha = .10)
+cld(lsmeans(model.sham, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+confint(pairs(emmeans(model, "Day", by = "Treatment"), reverse = T, type = "response"), level = 0.90)
+
+#p-values
+contrast(emmeans(model, "Treatment", by = "Day", type = "response"), method = "pairwise")
+
+contrast(emmeans(model, "Day", by = "Treatment", type = "response"), method = "pairwise")
+
+remove(model)
+
+
+####sitting
+#fit model
+model <- 
+  glmmTMB(
+    (dogSittingInactive + downwardDog) ~ Treatment*Day + Period + Order + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.sit = model
+
+#fixed effects
+sitting.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "sitting")
+
+{
+  #means
+  sitting.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "sitting")
+  
+  #mean diff
+  sitting.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "sitting")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Day, type = "response"), alpha = .1)
+cld(lsmeans(model.sit, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+remove(model)
+
+
+####drinking
+#fit model
+model <- 
+  glmmTMB(
+    drinking ~ Treatment*Day + Period + Order + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.drink = model
+
+#fixed effects
+drinking.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "drinking")
+
+{
+  #means
+  drinking.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "drinking")
+  
+  #mean diff
+  drinking.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "drinking")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Day, type = "response"), alpha = .1)
+cld(lsmeans(model.drink, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+remove(model)
+
+
+####agonistic
+#fit model
+model <- 
+  glmmTMB(
+    (agonistic + spaceCompetition) ~ Treatment*Day + Period + Order + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.ag = model
+
+#fixed effects
+aggression.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "aggression")
+
+{
+  #means
+  aggression.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "aggression")
+  
+  #mean diff
+  aggression.diff <- 
+    rbind(
+      rbind(
+        rbind(
+          confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+          confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+          confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+          confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+        ),
+        confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+        confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+      ) %>% 
+        mutate(contrast = revalue(contrast, c(
+          "1 / 2" = "day1 / day2", 
+          "1 / 3" = "day1 / day3", 
+          "1 / 4" = "day1 / day4", 
+          "2 / 3" = "day2 / day3", 
+          "2 / 4" = "day2 / day4", 
+          "3 / 4" = "day3 / day4", 
+          "2 / 1" = "day2 / day1", 
+          "3 / 1" = "day3 / day1", 
+          "3 / 2" = "day3 / day2", 
+          "4 / 1" = "day4 / day1", 
+          "4 / 2" = "day4 / day2", 
+          "4 / 3" = "day4 / day3"
+        ))) %>% 
+        mutate(Day = ""),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(Behavior = "aggression")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Day, type = "response"), alpha = .1)
+cld(lsmeans(model.ag, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+#p-values
+contrast(emmeans(model.ag, "Treatment", by = "Day", type = "response"), method = "pairwise")
+
+contrast(emmeans(model.ag, "Day", by = "Treatment", type = "response"), method = "pairwise")
+
+remove(model)
+
+
+####feeding
+#fit model
+model <- 
+  glmmTMB(
+    feeding ~ Treatment*Day + Period + Order + (1|Treatment:Pen), 
+    data = dat, 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.feed = model
+
+#fixed effects
+feeding.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "feeding")
+
+{
+  #means
+  feeding.means <- 
+    rbind(
+      rbind(
+        summary(emmeans(model, "Treatment", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Treatment" = "x")), 
+        summary(emmeans(model, "Period", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Period" = "x")), 
+        summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+          rename(replace = c("Order" = "x"))
+      ) %>% 
+        mutate(Day = ""), 
+      summary(emmeans(model, ~ Treatment|Day, type = "response"), level = 0.90) %>% 
+        rename(replace = c("Treatment" = "x"))
+    ) %>% 
+    mutate(Behavior = "feeding")
+  
+  #mean diff
+  feeding.diff <- rbind(rbind(rbind(
+    confint(pairs(emmeans(model, "Treatment"), reverse = F, type = "response"), level = 0.90),  
+    confint(pairs(emmeans(model, "Treatment"), reverse = T, type = "response"), level = 0.90), 
+    confint(pairs(emmeans(model, "Period"), reverse = F, type = "response"), level = 0.90), 
+    confint(pairs(emmeans(model, "Period"), reverse = T, type = "response"), level = 0.90),
+    confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+    confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90)
+  ),
+  confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+  confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+  ) %>% 
+    mutate(contrast = revalue(contrast, c(
+      "1 / 2" = "day1 / day2", 
+      "1 / 3" = "day1 / day3", 
+      "1 / 4" = "day1 / day4", 
+      "2 / 3" = "day2 / day3", 
+      "2 / 4" = "day2 / day4", 
+      "3 / 4" = "day3 / day4", 
+      "2 / 1" = "day2 / day1", 
+      "3 / 1" = "day3 / day1", 
+      "3 / 2" = "day3 / day2", 
+      "4 / 1" = "day4 / day1", 
+      "4 / 2" = "day4 / day2", 
+      "4 / 3" = "day4 / day3"
+    ))) 
+  %>% mutate(Day = ""),
+  confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = F, type = "response"), level = 0.90),
+  confint(pairs(emmeans(model, "Treatment", by = "Day"), reverse = T, type = "response"), level = 0.90)
+  ) %>% 
+    mutate(Behavior = "feeding")
+  }
+
+#comparisons
+cld(lsmeans(model, ~ Day, type = "response"), alpha = .1)
+cld(lsmeans(model.feed, "Treatment", by = "Day", type = "response"), alpha = .1)
+
+remove(model)
+
+
+####enrichment
+#fit model
+model <- 
+  glmmTMB(
+    enrichmentInteraction ~ Day + Order + (1|Pen), 
+    data = subset(dat, Treatment == "luna"), 
+    family = binomial(link = logit), 
+    weights = Weight, 
+    REML = T
+  )
+
+model.enrich = model
+
+#fixed effects
+enrichment.wald <- 
+  Anova(model, type = 3) %>% 
+  mutate(behavior = "enrichment")
+
+{
+  #means
+  enrichment.means <- 
+    rbind( 
+      summary(emmeans(model, "Order", type = "response"), level = 0.90) %>% 
+        rename(replace = c("Order" = "x")), 
+      summary(emmeans(model, "Day", type = "response"), level = 0.90) %>% 
+        rename(replace = c("Day" = "x"))
+    ) %>% 
+    mutate(Behavior = "enrichment")
+  
+  #mean diff
+  enrichment.diff <- 
+    rbind(
+      confint(pairs(emmeans(model, "Order"), reverse = F, type = "response"), level = 0.90),  
+      confint(pairs(emmeans(model, "Order"), reverse = T, type = "response"), level = 0.90),
+      confint(pairs(emmeans(model, "Day"), reverse = F, type = "response"), level = 0.90),  
+      confint(pairs(emmeans(model, "Day"), reverse = T, type = "response"), level = 0.90)
+    ) %>% 
+    mutate(contrast = revalue(contrast, c(
+      "1 / 2" = "day1 / day2", 
+      "1 / 3" = "day1 / day3", 
+      "1 / 4" = "day1 / day4", 
+      "2 / 3" = "day2 / day3", 
+      "2 / 4" = "day2 / day4", 
+      "3 / 4" = "day3 / day4", 
+      "2 / 1" = "day2 / day1", 
+      "3 / 1" = "day3 / day1", 
+      "3 / 2" = "day3 / day2", 
+      "4 / 1" = "day4 / day1", 
+      "4 / 2" = "day4 / day2", 
+      "4 / 3" = "day4 / day3"
+    ))) %>% 
+    mutate(Behavior = "enrichment")
+  }
+
+#overall mean
+summary(emmeans(model, ~ 1, type = "response"), level = 0.90)
+
+#comparisons
+cld(lsmeans(model.enrich, ~ Day, type = "response"), alpha = .1)
+
+#p-values
+contrast(emmeans(model.enrich, "Day", type = "response"), method = "pairwise")
+
+remove(model)
+
+
+####other behaviors
+enrich.dat <- subset(dat, Treatment == "luna")
+control.dat <- subset(dat, Treatment == "control")
+weighted.mean((enrich.dat$otherSocial + enrich.dat$other), w = enrich.dat$Weight)
+weighted.mean((control.dat$otherSocial + control.dat$other), w = control.dat$Weight)
+
+weighted.ci <- 
+  function(x, weights, conf.level = 0.90) {
+    require(Hmisc)
+    nx <- length(x)
+    df <- nx - 1
+    vx <- wtd.var(x, weights, normwt = TRUE)
+    mx <- weighted.mean(x, weights)
+    stderr <- sqrt(vx/nx)
+    tstat <- mx/stderr
+    alpha <- 1 - conf.level
+    cint <- qt(1 - alpha/2, df)
+    cint <- tstat + c(-cint, cint)
+    cint * stderr
+  }
+
+#confidence intervals for weighted mean
+weighted.ci((enrich.dat$otherSocial + enrich.dat$other), enrich.dat$Weight)
+weighted.ci((control.dat$otherSocial + control.dat$other), control.dat$Weight)
+
+
+####baseline dat
+mean <- 
+  apply(
+    baseline.dat[, 4:13], 
+    2, 
+    function(x)
+    {weighted.mean(x, w = baseline.dat$Weight)}
+  )
+
+ci <- 
+  apply(
+    baseline.dat[, 4:13], 
+    2, 
+    function(x, weights = baseline.dat$Weight, conf.level = 0.90) 
+    {
+      require(Hmisc)
+      nx <- length(x)
+      df <- nx - 1
+      vx <- wtd.var(x, weights, normwt = TRUE)
+      mx <- weighted.mean(x, weights)
+      stderr <- sqrt(vx/nx)
+      tstat <- mx/stderr
+      alpha <- 1 - conf.level
+      cint <- qt(1 - alpha/2, df)
+      cint <- tstat + c(-cint, cint)
+      cint * stderr
+    }
+  )
+
+
+baseline.results <- as.data.frame(cbind(mean, ci[1,], ci[2,]))
+```
+
+#Kendall's tau correlations at pen-level
+```{r}
+cor.test(dat$lyingInactive, dat$standingInactive, method = "kendall")
+```
+
+#merge scan results
+```{r eval=FALSE, include=FALSE}
+{
+  means <- 
+    rbind(exploring.means, lying.means, standing.means, walking.means, shamChewing.means, feeding.means, sitting.means, other.means, drinking.means, agonistic.means, enrichmentInteraction.means)
+  
+  remove(exploring.means, lying.means, standing.means, walking.means, shamChewing.means, feeding.means, sitting.means, other.means, drinking.means, agonistic.means, enrichmentInteraction.means)
+  
+  meanDiff <- 
+    rbind(
+      exploring.diff, lying.diff, standing.diff, walking.diff, shamChewing.diff, feeding.diff, sitting.diff, other.diff, drinking.diff, agonistic.diff, enrichmentInteraction.diff) %>% 
+    mutate(contrast = revalue(contrast, c("1 / 2" = "day1 / day2", "1 / 3" = "day1 /  day3", "1 / 4" = "day1 /  day4", "2 / 3" = "day2 /  day3", "2 / 4" = "day2 /  day4", "3 / 4" = "day3 /  day4")))
+  
+  remove(exploring.diff, lying.diff, standing.diff, walking.diff, shamChewing.diff, feeding.diff, sitting.diff, other.diff, drinking.diff, agonistic.diff, enrichmentInteraction.diff)
+  
+  Waldtests <- 
+    cbind(
+      rbind(
+        exploring.wald, lying.wald, standing.wald, walking.wald, shamChewing.wald, feeding.wald, sitting.wald, other.wald, drinking.wald, agonistic.wald, 
+        make.row.names = F, 
+        deparse.level = 0), 
+      data.frame(parameter = rep(c("chi2", "df", "p"), 10))
+    )
+}
+remove(exploring.wald, lying.wald, standing.wald, walking.wald, shamChewing.wald, feeding.wald, sitting.wald, other.wald, drinking.wald, agonistic.wald)
+
+```
+
+#write scan data
+```{r eval=FALSE, include=FALSE}
+write.csv(means, file = "results_means_scan.csv")
+write.csv(meanDiff, file = "results_mean_diff_scan.csv")
+write.csv(Waldtests, file = "results_wald_tests_scan.csv")
+write.csv(baseline.results, file = "results_baseline_scan.csv")
+```
